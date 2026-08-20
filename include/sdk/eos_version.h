@@ -1,0 +1,54 @@
+
+
+#pragma once
+
+#define EOS_MAJOR_VERSION	1
+
+#define EOS_MINOR_VERSION	19
+
+#define EOS_PATCH_VERSION	0
+
+#define EOS_HOTFIX_VERSION	7
+
+#define EOS_VERSION_STRINGIFY_2(x) #x
+#define EOS_VERSION_STRINGIFY(x) EOS_VERSION_STRINGIFY_2(x)
+
+#define EOS_COMPANY_NAME  "Epic Games, Inc."
+
+#define EOS_COPYRIGHT_STRING "Copyright Epic Games, Inc. All Rights Reserved."
+
+#define EOS_PRODUCT_NAME "Epic Online Services SDK"
+
+#define EOS_PRODUCT_IDENTIFIER "Epic Online Services SDK"
+
+#define EOS_VERSION_STRING_BASE                  \
+	EOS_VERSION_STRINGIFY(EOS_MAJOR_VERSION) "." \
+	EOS_VERSION_STRINGIFY(EOS_MINOR_VERSION) "." \
+	EOS_VERSION_STRINGIFY(EOS_PATCH_VERSION) "." \
+	EOS_VERSION_STRINGIFY(EOS_HOTFIX_VERSION)
+
+#if defined(BUILT_FROM_CHANGELIST)
+#define EOS_VERSION_STRING_AFTERCL               \
+	EOS_VERSION_STRING_BASE "-"                  \
+	EOS_VERSION_STRINGIFY(BUILT_FROM_CHANGELIST)
+#else
+#define EOS_VERSION_STRING_AFTERCL \
+    EOS_VERSION_STRING_BASE
+#endif
+
+#if defined(BUILT_FOR_SDK_VERSION)
+#define EOS_VERSION_STRING                       \
+	EOS_VERSION_STRING_AFTERCL "+"               \
+	EOS_VERSION_STRINGIFY(BUILT_FOR_SDK_VERSION)
+#else
+#define EOS_VERSION_STRING     \
+	EOS_VERSION_STRING_AFTERCL
+#endif
+
+#ifndef RC_INVOKED
+
+#include "eos_base.h"
+
+EOS_DECLARE_FUNC(const char*) EOS_GetVersion(void);
+
+#endif 

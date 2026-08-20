@@ -1,0 +1,35 @@
+
+
+EOS_UI_KEY_ENTRY_FIRST(EOS_UISBF_, None, 0)
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, DPad_Left, (1 << 0))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, DPad_Right, (1 << 1))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, DPad_Down, (1 << 2))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, DPad_Up, (1 << 3))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, FaceButton_Left, (1 << 4))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, FaceButton_Right, (1 << 5))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, FaceButton_Bottom, (1 << 6))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, FaceButton_Top, (1 << 7))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, LeftShoulder, (1 << 8))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, RightShoulder, (1 << 9))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, LeftTrigger, (1 << 10))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, RightTrigger, (1 << 11))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, Special_Left, (1 << 12))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, Special_Right, (1 << 13))
+
+EOS_UI_KEY_MODIFIER(EOS_UISBF_, LeftThumbstick, (1 << 14))
+
+EOS_UI_KEY_MODIFIER_LAST(EOS_UISBF_, RightThumbstick, (1 << 15))

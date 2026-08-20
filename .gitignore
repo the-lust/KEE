@@ -1,0 +1,27 @@
+# ── Build artifacts ─────────────────────────────────────────────
+bin/
+obj/
+build/
+build-release/
+build-cmake*/
+*.obj
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.log
+
+# ── Large vendored dependency (download separately, see README) ─
+third_party/protobuf/
+
+# ── IDE / editor ────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── Runtime data ─────────────────────────────────────────────────
+kee_settings/configs.user.ini
+*.sav
+*.json

@@ -1,0 +1,429 @@
+
+
+syntax = "proto3";
+
+option optimize_for = LITE_RUNTIME;
+
+message Presence_Info_Request_pb {
+
+}
+
+message Presence_Info_pb {
+    string userid = 1;
+    int32  status = 2;
+    string productid = 3;
+    string productversion = 4;
+    string platform = 5;
+    string richtext = 6;
+    map<string, string> records = 7;
+    string productname = 8;
+}
+
+message Presence_Message_pb {
+    oneof message {
+        Presence_Info_Request_pb  presence_info_request = 1;
+        Presence_Info_pb presence_info = 2;
+	}
+}
+
+message UserInfo_Info_Request_pb {
+
+}
+
+message UserInfo_Info_pb {
+	string country = 1;
+	string displayname = 2;
+	string preferredlanguage = 3;
+	string nickname = 4;
+}
+
+message UserInfo_Message_pb {
+    oneof message {
+        UserInfo_Info_Request_pb userinfo_info_request = 1;
+        UserInfo_Info_pb userinfo_info = 2;
+	}
+}
+
+message Session_Infos_Request_pb {
+    string session_id = 1;
+}
+
+message Session_Attr_Value {
+    oneof value {
+        int64  i = 1;
+		double d = 2;
+		bool   b = 3;
+		string s = 4;
+	}
+}
+
+message Session_Attribute {
+    int32 advertisement_type = 1;
+    Session_Attr_Value value = 2;
+}
+
+message Session_Infos_pb {
+    string session_id = 1;
+	string bucket_id = 2;
+	uint32 max_players = 3;
+    repeated string players = 4;
+    repeated string registered_players = 5;
+    bool presence_allowed = 6;
+    string host_address = 7;
+    int32 permission_level = 8;
+    bool join_in_progress_allowed = 9;
+    bool invites_allowed = 10;
+    map<string, Session_Attribute> attributes = 11;
+    int32 state = 12;
+}
+
+message Session_Destroy_pb {
+    string session_id = 1;
+}
+
+message Session_Join_Request_pb {
+    string session_id = 1;
+}
+
+message Session_Join_Response_pb {
+    string session_id = 1;
+    string user_id = 2;
+    int32 reason = 3;
+}
+
+message Session_Invite_pb {
+    Session_Infos_pb infos = 1;
+}
+
+message Session_Invite_Response_pb {
+    string session_id = 1;
+    bool accepted = 2;
+}
+
+message Session_Register_pb {
+    string session_id = 1;
+    repeated string member_ids = 2;
+}
+
+message Session_Unregister_pb {
+    string session_id = 1;
+    repeated string member_ids = 2;
+}
+
+message Session_Message_pb {
+    oneof message {
+        Session_Infos_Request_pb sessions_request = 1;
+        Session_Infos_pb session_infos = 2;
+        Session_Destroy_pb session_destroy = 3;
+        Session_Join_Request_pb session_join_request = 4;
+        Session_Join_Response_pb session_join_response = 5;
+        Session_Invite_pb session_invite = 6;
+        Session_Invite_Response_pb session_invite_response = 7;
+        Session_Register_pb session_register = 8;
+        Session_Unregister_pb session_unregister = 9;
+	}
+}
+
+message Session_Search_Parameter {
+    map<int32, Session_Attr_Value> param = 1;
+}
+
+message Sessions_Search_pb {
+    uint64 search_id = 1;
+    string session_id = 2;
+    string target_id = 3;
+    map<string, Session_Search_Parameter> parameters = 4;
+    uint32 max_results = 5;
+}
+
+message Sessions_Search_response_pb {
+    uint64 search_id = 1;
+    repeated Session_Infos_pb sessions = 2;
+}
+
+message Sessions_Search_Message_pb {
+    oneof message {
+        Sessions_Search_pb search = 1;
+        Sessions_Search_response_pb search_response = 2;
+    }
+}
+
+message P2P_Connect_Request_pb {
+    string socket_name = 1;
+}
+
+message P2P_Connect_Response_pb {
+    bool accepted = 1;
+}
+
+message P2P_Data_Message_pb {
+    bytes data = 1;
+    int32 channel = 2;
+    string socket_name = 3;
+    string user_id = 4;
+}
+
+message P2P_Data_Acknowledge_pb {
+    int32 channel = 1;
+    bool accepted = 2;
+}
+
+message P2P_Connection_Close_pb {
+}
+
+message P2P_Message_pb {
+    oneof message {
+        P2P_Connect_Request_pb connect_request = 1;
+        P2P_Connect_Response_pb connect_response = 2;
+        P2P_Data_Message_pb data_message = 3;
+        P2P_Data_Acknowledge_pb data_acknowledge = 4;
+        P2P_Connection_Close_pb connection_close = 5;
+	}
+}
+
+message Lobby_Attr_Value {
+    oneof value {
+        int64  i = 1;
+		double d = 2;
+		bool   b = 3;
+		string s = 4;
+	}
+}
+
+message Lobby_Attribute {
+    int32 visibility_type = 1;
+    Lobby_Attr_Value value = 2;
+}
+
+message Lobby_Member_Infos_pb {
+    map<string, Lobby_Attribute> attributes = 1;
+}
+
+message Lobby_Infos_pb {
+    string lobby_id = 1;
+    uint32 max_lobby_member = 2;
+    int32 permission_level = 3;
+    map<string, Lobby_Attribute> attributes = 4;
+    string owner_id = 5;
+    map<string, Lobby_Member_Infos_pb> members = 6;
+}
+
+message Lobby_Update_pb {
+    string lobby_id = 1;
+    uint32 max_lobby_member = 2;
+    int32 permission_level = 3;
+    map<string, Lobby_Attribute> attributes = 4;
+}
+
+message Lobby_Member_Update_pb {
+    string lobby_id = 1;
+    map<string, Lobby_Member_Infos_pb> member = 2;
+}
+
+message Lobby_Join_Request_pb {
+    string lobby_id = 1;
+    int32 join_id = 2;
+}
+
+message Lobby_Join_Response_pb {
+    Lobby_Infos_pb infos = 1;
+    int32 reason = 2;
+    int32 join_id = 3;
+}
+
+message Lobby_Invite_pb {
+    Lobby_Infos_pb infos = 1;
+}
+
+message Lobby_Member_Join_pb {
+    string lobby_id = 1;
+    string member_id = 2;
+}
+
+message Lobby_Member_Leave_pb {
+    string lobby_id = 1;
+    string member_id = 2;
+    int32 reason = 3;
+}
+
+message Lobby_Member_Promote_pb {
+    string lobby_id = 1;
+    string member_id = 2;
+}
+
+message Lobby_Message_pb {
+    oneof message {
+        Lobby_Update_pb        lobby_update = 1;
+        Lobby_Join_Request_pb  lobby_join_request = 2;
+        Lobby_Join_Response_pb lobby_join_response = 3;
+        Lobby_Invite_pb        lobby_invite = 4;
+
+        Lobby_Member_Update_pb  member_update = 5;
+        Lobby_Member_Join_pb    member_join = 6;
+        Lobby_Member_Leave_pb   member_leave = 7;
+        Lobby_Member_Promote_pb member_promote = 8;
+	}
+}
+
+message Lobby_Search_Parameter {
+    map<int32, Lobby_Attr_Value> param = 1;
+}
+
+message Lobbies_Search_pb {
+    uint64 search_id = 1;
+    string lobby_id = 2;
+    string target_id = 3;
+    map<string, Lobby_Search_Parameter> parameters = 4;
+    uint32 max_results = 5;
+}
+
+message Lobbies_Search_response_pb {
+    uint64 search_id = 1;
+    repeated Lobby_Infos_pb lobbies = 2;
+}
+
+message Lobbies_Search_Message_pb {
+    oneof message {
+        Lobbies_Search_pb search = 1;
+        Lobbies_Search_response_pb search_response = 2;
+    }
+}
+
+message Friend_Info_Request_pb {
+}
+
+message Friend_Info_pb {
+    string userid = 1;
+    int32 status = 2;
+}
+
+message Friends_Message_pb {
+    oneof message {
+        Friend_Info_Request_pb friend_info_request = 1;
+        Friend_Info_pb friend_info = 2;
+	}
+}
+
+message Achievement_pb {
+    string achievement_id = 1;
+    int32 progress = 2;
+    int64 unlock_time = 3;
+}
+
+message Achievements_Message_pb {
+    repeated Achievement_pb achievements = 1;
+}
+
+message Connect_Request_Info_pb {
+
+}
+
+message Connect_Infos_pb {
+    string userid = 1;
+    map<string, string> sessions = 2;
+    string displayname = 3;
+}
+
+message Connect_Message_pb {
+    oneof message {
+        Connect_Request_Info_pb request = 1;
+        Connect_Infos_pb infos = 2;
+	}
+}
+
+message Network_Port_pb {
+    uint32 port = 1;
+}
+
+message Network_Peer_pb {
+    repeated string peer_ids = 1;
+}
+
+message Network_Peer_Accept_pb {
+}
+
+message Network_Peer_Connect_pb {
+}
+
+message Network_Peer_Disconnect_pb {
+}
+
+message Network_Advertise_pb {
+    oneof message {
+        Network_Port_pb port = 1;
+        Network_Peer_pb peer = 2;
+        Network_Peer_Accept_pb accept = 3;
+        Network_Peer_Connect_pb peer_connect = 4;
+		Network_Peer_Disconnect_pb peer_disconnect = 5;
+	}
+}
+
+message Stat_pb {
+    string name = 1;
+    int32 value = 2;
+}
+
+message Stats_Message_pb {
+    repeated Stat_pb stats = 1;
+}
+
+message Leaderboard_Entry_pb {
+    string userid = 1;
+    int32 rank = 2;
+    int32 score = 3;
+}
+
+message Leaderboards_Message_pb {
+    string leaderboard_name = 1;
+    repeated Leaderboard_Entry_pb entries = 2;
+}
+
+message CustomInvite_Send_pb {
+    string sender_id    = 1;   
+    string recipient_id = 2;   
+    string payload      = 3;   
+}
+
+message CustomInvites_Message_pb {
+    oneof message {
+        CustomInvite_Send_pb custom_invite_send = 1;
+    }
+}
+
+message Friends_Invite_pb {
+    string sender_id    = 1;
+    string recipient_id = 2;
+    int32  action       = 3;   
+}
+
+message Friends_Invite_Message_pb {
+    oneof message {
+        Friends_Invite_pb friends_invite = 1;
+    }
+}
+
+message Network_Message_pb {
+    string source_id = 1;
+    string dest_id = 2;
+	string game_id = 3;
+    int64 timestamp = 4;
+    oneof messages {
+        Network_Advertise_pb network_advertise = 5;
+		Friends_Message_pb friends = 6;
+        Presence_Message_pb presence = 7;
+        UserInfo_Message_pb userinfo = 8;
+        Session_Message_pb session = 9;
+        P2P_Message_pb p2p = 10;
+        Connect_Message_pb connect = 11;
+        Sessions_Search_Message_pb sessions_search = 12;
+        Lobby_Message_pb lobby = 13;
+        Lobbies_Search_Message_pb lobbies_search = 14;
+        Achievements_Message_pb achievements = 15;
+        Stats_Message_pb stats = 16;
+        Leaderboards_Message_pb leaderboards = 17;
+        CustomInvites_Message_pb custom_invites = 18;
+        Friends_Invite_Message_pb friends_invite = 19;
+    }
+}
+
+// NOTE: This append block - actual fix replaces existing content below
