@@ -1,72 +1,31 @@
-# KEE — Kaneki's Epic Emulator
+# KEE — Epic Online Services SDK Emulator
 
-**KEE** is a drop-in replacement for the **Epic Online Services (EOS) SDK**. It ships the
-`EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll` binaries plus optional proxy loaders
-(`winmm.dll` / `version.dll`) so Epic games run fully offline — without the Epic Games Launcher,
-without an account, and often without any internet connection — while preserving multiplayer
-behavior, achievements, stats, presence, lobbies and more.
+Drop-in replacement for `EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll`. Runs Epic games offline without the launcher or account.
 
-Built from the S-EGS codebase, refactored into a unified project with a single build.
+## Binaries
 
----
-
-## What works
-
-The emulator implements the EOS SDK surface with **100% export coverage**: every function in the
-official EOS headers is exported by `kee.def` and has an implementation (see
-`tools/inventory_exports.ps1` for the verification report).
-
-| Service | Level | Notes |
-| :--- | :--- | :--- |
-| Auth / Identity | Full | Offline identity spoofing, login flows |
-| Connect | Full | Device accounts, PUID mapping, friends/presence wiring |
-| Ecom / Entitlements | Full | Ownership granting, catalog queries |
-| Lobby & Sessions | Full | LAN peer discovery + relay, invites, search |
-| P2P Networking | Full | Reliable UDP/TCP transport over LAN relay |
-| PlayerData / TitleStorage | Full | Local persistence |
-| Achievements / Stats / Leaderboards | Full | Local persistence |
-| Presence / UserInfo / Friends / CustomInvites | Full | Local + LAN-synced |
-| RTC / RTCAdmin / Voice | Stubbed | Room management; audio transport bypassed |
-| Anti-Cheat (EAC) | Bypassed | Client/server modules report success |
-| Integrated Platform / Launcher checks | Bypassed | `CheckForLauncherAndRestart` → no restart |
-
-Two emulation layers are compiled in:
-
-- **`NETWORK_PROTOBUF_AVAILABLE` (default, protobuf 7.35.1 vendored):** real LAN relay engine —
-  UDP broadcast discovery + TCP message relay between KEE instances on the same network.
-- **`--without-protobuf` (network stubs):** everything still works locally; no cross-machine relay.
-
-## The 6 binaries
-
-| Binary | Role |
-| :--- | :--- |
-| `EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll` | The emulated EOS SDK |
-| `winmm.dll`, `version.dll` (x64 + x86) | Proxy loaders: inject launcher command-line args and load the real SDK DLL |
+| File | Role |
+|------|------|
+| `EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll` | Emulated EOS SDK |
+| `winmm.dll`, `version.dll` (x64/x86) | Proxy loaders: inject args + load emulator |
 | `egclient64.dll` / `egclient.dll` | EGS client emulation (like `steamclient` in gbe_fork) |
-| `cold_loader64.exe` / `cold_loader.exe` | Loader that boots a target game with the emulator |
-
----
+| `cold_loader64.exe` / `cold_loader.exe` | Game launcher |
 
 ## Building
 
-Requirements: Visual Studio (2019+ Build Tools), **Premake5**, and the vendored protobuf
-(`third_party/protobuf` — download v35.1 separately, see `.gitignore`).
-
-```powershell
-# premake-generated solution (committed)
-build.bat          # x64 Release
-build.bat x86      # 32-bit Release
-build.bat all      # both archs, collects the 6 DLLs into build-release/
-
-# or directly:
+```
+premake5 vs2022
 msbuild KEE.sln /p:Configuration=Release /p:Platform=x64 /m
+msbuild KEE.sln /p:Configuration=Release /p:Platform=Win32 /m
 ```
 
-Protobuf is optional: `premake5 vs2022 --without-protobuf` builds a fully local-only emulator.
+Requires: VS Build Tools 2019+, Premake5, protobuf 7.35.1 (vendored in `third_party/protobuf`, not tracked).
+
+Optional: `premake5 vs2022 --without-protobuf` — builds local-only, no LAN relay.
 
 ## Configuration
 
-Settings folder: **`kee_settings/`** (copy from `kee_settings.EXAMPLE`).
+Copy `kee_settings.EXAMPLE` to `kee_settings/` and edit:
 
 ```ini
 [UserInfo]
@@ -80,25 +39,44 @@ CountryCode=US
 LocaleCode=en
 ```
 
-## Directory layout
+## Architecture
 
-- `src/platform/` — EOS entry points, platform creation, launcher bypass
-- `src/<service>/` — one folder per EOS service (`auth`, `connect`, `lobby`, `p2p`, ...)
-- `src/network/` — LAN relay engine (UDP discovery + TCP relay over protobuf messages)
-- `include/` — public headers: `include/sdk` (EOS API), `include/utils`, `include/network`
-- `src/kee.def` — export table for the emulator DLL
-- `src/egclient.def` — export table for the EGS client DLL
-- `tools/` — `inventory_exports.ps1` (export-coverage report), `generate_interfaces.cpp`
-- `third_party/` — vendored deps (minhook, mini_detour, nlohmann json, fifo_map, protobuf)
+```
+src/
+  platform/       # EOS entry points, launcher bypass
+  <service>/      # per-service impl (auth, connect, lobby, p2p, ...)
+  network/        # LAN relay: UDP broadcast discovery + TCP/protobuf relay
+  kee.def         # emulator export table (1072 exports)
+  egclient.def    # EGS client exports
+include/
+  sdk/            # EOS API headers
+  utils/          # portable_api.h (cross-platform sockets, time, etc.)
+  network/        # LAN relay headers
+third_party/      # minhook, mini_detour, nlohmann json, fifo_map, protobuf
+tools/
+  inventory_exports.ps1   # export coverage vs official SDK
+  generate_interfaces.cpp
+```
+
+## LAN Relay (protobuf)
+
+- UDP broadcast discovery on `network_port..max_network_port` (default 40000..40009)
+- TCP relay with 4-byte length prefix + protobuf (`src/network/proto/network_proto.proto`)
+- `Network` class manages peers, sockets, and message routing
+- Regenerate: `protoc -I src/network/proto --cpp_out=src/network/proto src/network/proto/network_proto.proto`
 
 ## Verification
 
 ```powershell
-powershell -File tools/inventory_exports.ps1  # writes build/export_gap_report.json
+powershell -File tools/inventory_exports.ps1   # -> build/export_gap_report.json
 ```
 
-Reports: SDK functions missing from `kee.def`, and def exports without an implementation.
+Checks: every `kee.def` export has implementation; every SDK function is exported.
 
----
+## Experimental / Differences
 
-*Developed for the soft-modding / offline-play community.*
+See `EXPERIMENTAL.md` for features not in stock EOS or known divergences.
+
+## License
+
+MIT — see `LICENSE`.
