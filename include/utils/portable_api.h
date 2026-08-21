@@ -138,11 +138,27 @@ struct ipv4m_addr {
         addr.sin_port   = htons(port);
         addr.sin_addr.s_addr = htonl(ip);
     }
-    uint16_t port() const { return ntohs(addr.sin_port); }
+uint16_t port() const { return ntohs(addr.sin_port); }
     std::string ip() const {
         char buf[INET_ADDRSTRLEN]{};
         inet_ntop(AF_INET, &addr.sin_addr, buf, sizeof(buf));
         return buf;
+    }
+    void set_port(uint16_t port) { addr.sin_port = htons(port); }
+    void set_ip(const std::string& ip) { inet_pton(AF_INET, ip.c_str(), &addr.sin_addr); }
+    void set_ip(uint32_t ip) { addr.sin_addr.s_addr = htonl(ip); }
+    std::string get_ip() const { return ip(); }
+
+    static ipv4m_addr any_addr() { return ipv4m_addr("0.0.0.0", 0); }
+    static ipv4m_addr loopback_addr() { return ipv4m_addr("127.0.0.1", 0); }
+
+    std::string to_string(bool include_port = false) const {
+        std::string res = ip();
+        if (include_port) {
+            res += ":";
+            res += std::to_string(port());
+        }
+        return res;
     }
     bool operator==(const ipv4m_addr& o) const {
         return addr.sin_addr.s_addr == o.addr.sin_addr.s_addr
@@ -329,14 +345,23 @@ public:
         return Poll(m_sock, Socket::poll_flags::out, timeout_ms);
     }
 
-    uint16_t local_port() const {
+uint16_t local_port() const {
         sockaddr_in la{};
         socklen_t sl = sizeof(la);
         getsockname(m_sock, reinterpret_cast<sockaddr*>(&la), &sl);
         return ntohs(la.sin_port);
     }
 
+    ipv4m_addr get_addr() const {
+        sockaddr_in pa{};
+        socklen_t sl = sizeof(pa);
+        getpeername(m_sock, reinterpret_cast<sockaddr*>(&pa), &sl);
+        return ipv4m_addr(ntohl(pa.sin_addr.s_addr), ntohs(pa.sin_port));
+    }
+
+    void set_nonblocking(bool /*enable*/) { set_nonblocking(m_sock); }
+
     SOCKET native() const { return m_sock; }
 };
 
-} 
+}

@@ -43,16 +43,6 @@ EOS_DECLARE_FUNC(EOS_EResult) EOS_PresenceModification_SetJoinInfo(EOS_HPresence
     return pInst->SetJoinInfo(Options);
 }
 
-EOS_DECLARE_FUNC(EOS_EResult) EOS_PresenceModification_SetTemplateData(EOS_HPresenceModification Handle, const EOS_PresenceModification_SetTemplateDataOptions* Options)
-{
-    return EOS_EResult::EOS_Success;
-}
-
-EOS_DECLARE_FUNC(EOS_EResult) EOS_PresenceModification_SetTemplateId(EOS_HPresenceModification Handle, const EOS_PresenceModification_SetTemplateIdOptions* Options)
-{
-    return EOS_EResult::EOS_Success;
-}
-
 EOS_DECLARE_FUNC(void) EOS_PresenceModification_Release(EOS_HPresenceModification PresenceModificationHandle)
 {
     if (PresenceModificationHandle == nullptr)

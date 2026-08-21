@@ -1,99 +1,72 @@
 #include "network.h"
 
+#include <array>
+
 using namespace PortableAPI;
 
-Network::Network():
-    m_advertise(false),
-    m_advertise_rate(2000),
-    m_tcp_port(0)
-{
-    
-#if defined(NETWORK_COMPRESS)
-    max_message_size = 0;
-    max_compressed_message_size = 0;
-    m_zstd_ccontext = ZSTD_createCCtx();
-    m_zstd_dstream = ZSTD_createDStream();
-#endif
+namespace {
+    constexpr Network::next_packet_size_t KEE_MAX_PACKET = 4 * 1024 * 1024;
 
-    m_network_task.run(&Network::network_thread, this);
+    // Drains any pending data into the buffer. Returns false when the
+    // connection was closed or reset by the peer.
+    bool read_available(Network::tcp_buffer_t& tcp_buffer)
+    {
+        bool ok = true;
+        while (tcp_buffer.socket.has_data(0))
+        {
+            size_t tail = tcp_buffer.buffer.size();
+            tcp_buffer.buffer.resize(tail + 4096);
+            int r = tcp_buffer.socket.recv(&tcp_buffer.buffer[tail], 4096);
+            if (r <= 0)
+            {
+                tcp_buffer.buffer.resize(tail);
+                ok = false;
+                break;
+            }
+            tcp_buffer.buffer.resize(tail + static_cast<size_t>(r));
+        }
+        return ok;
+    }
+}
+
+Network::Network() :
+    m_tcp_self_recv{}
+{
+    m_tcp_self_recv.buffer.reserve(1024 * 10);
+    Socket::InitSocket();
+    m_network_task = std::thread(&Network::network_thread, this);
 }
 
 Network::~Network()
 {
-#if defined(NETWORK_COMPRESS)
-    APP_LOG(Log::LogLevel::DEBUG, "Shutting down Network, biggest message size was %llu, biggest compressed message size was %llu", max_message_size, max_compressed_message_size);
-#else
     APP_LOG(Log::LogLevel::DEBUG, "Shutting down Network");
-#endif
-
-    m_network_task.stop();
-    m_network_task.join();
-
-#if defined(NETWORK_COMPRESS)
-    ZSTD_freeCCtx(m_zstd_ccontext);
-    ZSTD_freeDStream(m_zstd_dstream);
-#endif
-
+    m_want_stop = true;
+    m_udp_socket.close();
+    m_tcp_socket.close();
+    m_tcp_self_send.close();
+    m_tcp_self_recv.socket.close();
+    if (m_network_task.joinable())
+        m_network_task.join();
+    stop_network();
 }
-
-#if defined(NETWORK_COMPRESS)
-
-string Network::compress(void const* data, size_t len)
-{
-    string res(ZSTD_compressBound(len), '\0');
-    res.resize(ZSTD_compressCCtx(m_zstd_ccontext, &res[0], res.length(), data, len, ZSTD_CLEVEL_DEFAULT));
-    return res;
-}
-
-string Network::decompress(void const* data, size_t len)
-{
-    static size_t decompress_block_size = ZSTD_DStreamOutSize();
-    static string res;
-
-    res.resize(decompress_block_size);
-    ZSTD_inBuffer inbuff{ data, len, 0 };
-    ZSTD_outBuffer outbuff{ const_cast<char*>(res.data()), res.length(), 0 };
-
-    while (inbuff.pos < inbuff.size)
-    {
-        size_t x = 0;
-        x = ZSTD_decompressStream(m_zstd_dstream, &outbuff, &inbuff);
-        if (ZSTD_isError(x))
-        {
-            if (x == size_t(-70))
-            {
-                res.resize(res.length() + decompress_block_size);
-                outbuff.size = res.length();
-                outbuff.dst = const_cast<char*>(res.data());
-            }
-            else
-            {
-                auto str_error = ZSTD_getErrorName(x);
-                APP_LOG(Log::LogLevel::WARN, "Decompression error: %s", str_error);
-                return string((char*)data, ((char*)data) + len);
-            }
-        }
-    }
-
-    ZSTD_initDStream(m_zstd_dstream);
-    res.resize(outbuff.pos);
-    return res;
-}
-
-#endif
 
 void Network::start_network()
 {
-    ipv4m_addr addr;
-    uint16_t port;
-    addr.set_addr(ipv4m_addr::any_addr);
+    try
+    {
+        m_udp_socket.open();
+    }
+    catch (...)
+    {
+        return;
+    }
 
+    uint16_t port = 0;
     for (port = network_port; port < max_network_port; ++port)
     {
-        addr.set_port(port);
         try
         {
-            m_udp_socket.bind(addr);
+            m_udp_socket.bind(port);
             break;
         }
         catch (...)
@@ -102,44 +75,57 @@ void Network::start_network()
     }
     if (port == max_network_port)
     {
-        
-        m_network_task.stop();
+        APP_LOG(Log::LogLevel::ERR, "Failed to start UDP socket");
+        m_want_stop = true;
+        return;
+    }
+
+    APP_LOG(Log::LogLevel::INFO, "UDP socket started on port: %hu", port);
+
+    std::mt19937_64& gen = get_gen();
+    std::uniform_int_distribution<int64_t> dis;
+
+    int x;
+    for (x = 0, port = static_cast<uint16_t>(dis(gen) % 30000 + 30000); x < 100; ++x, port = static_cast<uint16_t>(dis(gen) % 30000 + 30000))
+    {
+        try
+        {
+            m_tcp_socket.open();
+            m_tcp_socket.bind(port);
+            m_tcp_socket.listen(32);
+
+            ipv4m_addr self = ipv4m_addr::loopback_addr();
+            self.set_port(port);
+            m_tcp_self_send.open();
+            if (!m_tcp_self_send.connect(self))
+                throw socket_exception("self connect failed");
+
+            for (int i = 0; i < 50 && !m_tcp_socket.has_data(0); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+            m_tcp_self_recv.socket = std::move(m_tcp_socket.accept());
+            if (!m_tcp_self_recv.socket.is_valid())
+                throw socket_exception("self accept failed");
+            break;
+        }
+        catch (...)
+        {
+            m_tcp_socket.close();
+            m_tcp_self_send.close();
+            m_tcp_self_recv.socket.close();
+            APP_LOG(Log::LogLevel::WARN, "Failed to start tcp socket on port %hu", port);
+        }
+    }
+    if (x == 100)
+    {
+        APP_LOG(Log::LogLevel::ERR, "Failed to start tcp socket");
+        m_udp_socket.close();
+        m_want_stop = true;
     }
     else
     {
-        APP_LOG(Log::LogLevel::INFO, "UDP socket started on port: %hu", port);
-        std::uniform_int_distribution<int64_t> dis;
-        std::mt19937m_64& gen = get_gen();
-        int x;
-        for (x = 0, port = (dis(gen) % 30000 + 30000); x < 100; ++x, port = (dis(gen) % 30000 + 30000))
-        {
-            addr.set_port(port);
-            try
-            {
-                m_tcp_socket.bind(addr);
-                m_tcp_socket.listen(32);
-                addr.set_addr(ipv4m_addr::loopback_addr);
-                m_tcp_self_send.connect(addr);
-                m_tcp_self_recv.socket = std::move(m_tcp_socket.accept());
-                m_tcp_self_recv.buffer.reserve(1024 * 10);
-                break;
-            }
-            catch (...)
-            {
-                APP_LOG(Log::LogLevel::WARN, "Failed to start tcp socket on port %hu", x);
-            }
-        }
-        if (x == 100)
-        {
-            APP_LOG(Log::LogLevel::ERR, "Failed to start tcp socket");
-            m_udp_socket.close();
-            m_network_task.stop();
-        }
-        else
-        {
-            m_tcp_port = port;
-            APP_LOG(Log::LogLevel::INFO, "TCP socket started after %hu tries on port: %hu", x, port);
-        }
+        m_tcp_port = port;
+        APP_LOG(Log::LogLevel::INFO, "TCP socket started after %hu tries on port: %hu", x, port);
     }
 }
 
@@ -148,9 +134,16 @@ void Network::stop_network()
     m_advertise = false;
     m_udp_socket.close();
     m_tcp_socket.close();
+    m_tcp_self_send.close();
+    m_tcp_self_recv.socket.close();
     m_tcp_clients.clear();
+    m_waiting_in_tcp_clients.clear();
+    m_waiting_out_tcp_clients.clear();
+    m_waiting_connect_tcp_clients.clear();
     m_network_msgs.clear();
+    m_pending_network_msgs.clear();
     m_udp_addrs.clear();
+    m_tcp_peers.clear();
 }
 
 inline Network::next_packet_size_t Network::make_next_packet_size(string const& buff) const
@@ -211,7 +204,7 @@ void Network::do_advertise()
         return;
 
     m_last_advertise = now;
-    
+
     try
     {
         if (!m_my_peer_ids.empty())
@@ -230,7 +223,6 @@ void Network::do_advertise()
     }
     catch (...)
     {
-        
     }
 }
 
@@ -249,9 +241,6 @@ std::chrono::milliseconds Network::get_advertise_rate()
 void Network::add_new_tcp_client(PortableAPI::tcp_socket* cli, std::vector<peer_t> const& peer_ids, bool advertise_peer)
 {
     std::lock_guard<std::recursive_mutex> lk(local_mutex);
-
-    m_poll.add_socket(*cli); 
-    m_poll.set_events(*cli, Socket::poll_flags::in);
 
     Network_Message_pb msg;
     Network_Advertise_pb adv;
@@ -275,8 +264,8 @@ void Network::add_new_tcp_client(PortableAPI::tcp_socket* cli, std::vector<peer_
 
     adv.release_peer_connect();
     msg.release_network_advertise();
-    
-    if(advertise_peer)
+
+    if (advertise_peer)
     {
         APP_LOG(Log::LogLevel::DEBUG, "New peer: id %s %s", (*peer_ids.begin()).c_str(), cli->get_addr().to_string(true).c_str());
 
@@ -302,7 +291,6 @@ void Network::remove_tcp_peer(tcp_buffer_t& tcp_buffer)
     std::lock_guard<std::recursive_mutex> lk(local_mutex);
 
     APP_LOG(Log::LogLevel::DEBUG, "TCP Client %s gone", tcp_buffer.socket.get_addr().to_string().c_str());
-    m_poll.remove_socket(tcp_buffer.socket);
 
     Network_Message_pb msg;
     Network_Advertise_pb adv;
@@ -333,90 +321,48 @@ void Network::remove_tcp_peer(tcp_buffer_t& tcp_buffer)
 
 void Network::connect_to_peer(ipv4m_addr &addr, peer_t const& peer_id)
 {
+    std::lock_guard<std::recursive_mutex> lk(local_mutex);
+
     if (m_waiting_out_tcp_clients.count(peer_id) != 0)
         return;
 
-    bool connected = false;
-    auto it = m_waiting_connect_tcp_clients.find(peer_id);
-    bool wait = false;
     try
     {
-        if (it == m_waiting_connect_tcp_clients.end())
-        {
-            APP_LOG(Log::LogLevel::DEBUG, "Connecting to %s : %s", addr.to_string(true).c_str(), peer_id.c_str());
-            
-            m_waiting_connect_tcp_clients.emplace(peer_id, tcp_socket());
-            it = m_waiting_connect_tcp_clients.find(peer_id);
-            it->second.set_nonblocking(true);
-        }
-        it->second.connect(addr);
-        connected = true;
-    }
-    catch (is_connected &e)
-    {
-        connected = true;
-    }
-    catch (would_block &e)
-    {
-        wait = true;
-    }
-    catch(in_progress &e)
-    {
-        wait = true;
-    }
-    catch (std::exception &e)
-    {
-        m_waiting_connect_tcp_clients.erase(it);
-        APP_LOG(Log::LogLevel::WARN, "Failed to TCP connect to %s: %s", addr.to_string().c_str(), e.what());
-    }
+        tcp_socket sock;
+        sock.open();
 
-    if (wait)
-    {
-        fd_set set;
-        FD_ZERO(&set);
-        FD_SET(it->second.native(), &set);
-        timeval tv;
-        tv.tv_sec = 3;
-        tv.tv_usec = 0;
-        int res = ::select(0, nullptr, &set, nullptr, &tv);
-        if (res > 0)
-        {
-            connected = true;
-        }
-        else
-        {
-            m_waiting_connect_tcp_clients.erase(it);
-            APP_LOG(Log::LogLevel::WARN, "TCP connect to %s timed out", addr.to_string().c_str());
-        }
-    }
+        APP_LOG(Log::LogLevel::DEBUG, "Connecting to %s : %s", addr.to_string(true).c_str(), peer_id.c_str());
 
-    if (connected)
-    {
+        if (!sock.connect(addr))
+        {
+            APP_LOG(Log::LogLevel::WARN, "Failed to TCP connect to %s: timeout", addr.to_string(true).c_str());
+            return;
+        }
+
         Network_Message_pb msg;
         build_advertise_msg(msg);
 
         string buff(sizeof(next_packet_size_t), 0);
-        
-    #if defined(NETWORK_COMPRESS)
-        string data;
-        msg.SerializeToString(&data);
-        buff += std::move(compress(data.data(), data.length()));
 
-        max_message_size = std::max<uint64_t>(max_message_size, data.length());
-        max_compressed_message_size = std::max<uint64_t>(max_compressed_message_size, buff.length());
-    #else
         buff += std::move(msg.SerializeAsString());
-    #endif
+
         *reinterpret_cast<next_packet_size_t*>(&buff[0]) = make_next_packet_size(buff);
 
-        it->second.send(buff.data(), buff.length());
+        if (sock.send(buff.data(), buff.length()) <= 0)
+        {
+            APP_LOG(Log::LogLevel::WARN, "Failed to TCP send to %s", addr.to_string(true).c_str());
+            return;
+        }
 
-        APP_LOG(Log::LogLevel::DEBUG, "Connected to %s : %s", it->second.get_addr().to_string(true).c_str(), peer_id.c_str());
+        APP_LOG(Log::LogLevel::DEBUG, "Connected to %s : %s", sock.get_addr().to_string(true).c_str(), peer_id.c_str());
 
         tcp_buffer_t tcp_buffer{};
-        tcp_buffer.socket = std::move(it->second);
+        tcp_buffer.socket = std::move(sock);
         m_waiting_out_tcp_clients.emplace(peer_id, std::move(tcp_buffer));
-        m_waiting_connect_tcp_clients.erase(it);
+    }
+    catch (std::exception &e)
+    {
+        APP_LOG(Log::LogLevel::WARN, "Failed to TCP connect to %s: %s", addr.to_string(true).c_str(), e.what());
     }
 }
 
@@ -425,65 +371,55 @@ void Network::process_waiting_out_clients()
     if (m_waiting_out_tcp_clients.empty())
         return;
 
+    std::lock_guard<std::recursive_mutex> lk(local_mutex);
+
     Network_Message_pb msg;
     for (auto it = m_waiting_out_tcp_clients.begin(); it != m_waiting_out_tcp_clients.end(); )
     {
         try
         {
-            unsigned long count = 0;
-            it->second.socket.ioctlsocket(Socket::cmd_name::fionread, &count);
-            if (count > 0)
+            if (!read_available(it->second))
             {
-                if (it->second.next_packet_size == 0 && count > sizeof(next_packet_size_t))
+                it = m_waiting_out_tcp_clients.erase(it);
+                continue;
+            }
+
+            if (it->second.next_packet_size == 0 && it->second.buffer.size() >= sizeof(next_packet_size_t))
+            {
+                it->second.next_packet_size = *reinterpret_cast<next_packet_size_t*>(&it->second.buffer[0]);
+                it->second.next_packet_size = utils::Endian::net_swap(it->second.next_packet_size);
+                it->second.buffer.erase(it->second.buffer.begin(), it->second.buffer.begin() + sizeof(next_packet_size_t));
+            }
+
+            if (it->second.next_packet_size > KEE_MAX_PACKET)
+            {
+                APP_LOG(Log::LogLevel::WARN, "Dropping oversized packet (%u bytes) from peer – disconnecting", it->second.next_packet_size);
+                it->second.next_packet_size = 0;
+                it->second.buffer.clear();
+                it = m_waiting_out_tcp_clients.erase(it);
+                continue;
+            }
+
+            if (it->second.next_packet_size > 0 && it->second.buffer.size() >= it->second.next_packet_size)
+            {
+                if (msg.ParseFromArray(it->second.buffer.data(), static_cast<int>(it->second.next_packet_size)) &&
+                    msg.has_network_advertise() &&
+                    msg.network_advertise().has_accept())
                 {
-                    it->second.socket.recv(&it->second.next_packet_size, sizeof(next_packet_size_t));
-                    it->second.next_packet_size = utils::Endian::net_swap(it->second.next_packet_size);
-                    count -= sizeof(next_packet_size_t);
-                }
-                
-                static constexpr next_packet_size_t KEE_MAX_PACKET = 4 * 1024 * 1024; 
-                if (it->second.next_packet_size > KEE_MAX_PACKET)
-                {
-                    APP_LOG(Log::LogLevel::WARN, "Dropping oversized packet (%u bytes) from peer – disconnecting", it->second.next_packet_size);
                     it->second.next_packet_size = 0;
                     it->second.buffer.clear();
-                    it = m_waiting_out_tcp_clients.erase(it);
-                    continue;
+
+                    m_tcp_clients.emplace_back(std::move(it->second));
+                    add_new_tcp_client(&(m_tcp_clients.rbegin()->socket), std::vector<peer_t>{it->first}, false);
                 }
-                if (it->second.next_packet_size > 0 && count >= it->second.next_packet_size)
-                {
-                    it->second.buffer.resize(it->second.next_packet_size);
-                    it->second.socket.recv(it->second.buffer.data(), it->second.next_packet_size);
-
-                    const void* message;
-                    int message_size;
-
-                    message = it->second.buffer.data();
-                    message_size = it->second.buffer.size();
-
-                    if (msg.ParseFromArray(message, message_size) &&
-                        msg.has_network_advertise() && 
-                        msg.network_advertise().has_accept())
-                    {
-                        std::lock_guard<std::recursive_mutex> lk(local_mutex);
-
-                        it->second.next_packet_size = 0;
-                        it->second.buffer.clear();
-                        it->second.socket.set_nonblocking(false);
-
-                        m_tcp_clients.emplace_back(std::move(it->second));
-                        add_new_tcp_client(&(m_tcp_clients.rbegin()->socket), std::vector<peer_t>{it->first}, false);
-                    }
-                    it = m_waiting_out_tcp_clients.erase(it);
-                    continue;
-                }
+                it = m_waiting_out_tcp_clients.erase(it);
+                continue;
             }
-            
+
             ++it;
         }
         catch (std::exception &e)
         {
-            
             APP_LOG(Log::LogLevel::WARN, "Failed peer pair: %s", e.what());
             it = m_waiting_out_tcp_clients.erase(it);
         }
@@ -492,81 +428,70 @@ void Network::process_waiting_out_clients()
 
 void Network::process_waiting_in_client()
 {
+    if (m_waiting_in_tcp_clients.empty())
+        return;
+
+    std::lock_guard<std::recursive_mutex> lk(local_mutex);
+
     Network_Message_pb msg;
     for (auto it = m_waiting_in_tcp_clients.begin(); it != m_waiting_in_tcp_clients.end(); )
     {
         try
         {
-            unsigned long count = 0;
-            it->socket.ioctlsocket(Socket::cmd_name::fionread, &count);
-            if (count > 0)
+            if (!read_available(*it))
             {
-                if (it->next_packet_size == 0 && count > sizeof(next_packet_size_t))
+                it = m_waiting_in_tcp_clients.erase(it);
+                continue;
+            }
+
+            if (it->next_packet_size == 0 && it->buffer.size() >= sizeof(next_packet_size_t))
+            {
+                it->next_packet_size = *reinterpret_cast<next_packet_size_t*>(&it->buffer[0]);
+                it->next_packet_size = utils::Endian::net_swap(it->next_packet_size);
+                it->buffer.erase(it->buffer.begin(), it->buffer.begin() + sizeof(next_packet_size_t));
+            }
+
+            if (it->next_packet_size > KEE_MAX_PACKET)
+            {
+                APP_LOG(Log::LogLevel::WARN, "Dropping oversized inbound packet (%u bytes) – closing connection", it->next_packet_size);
+                it->next_packet_size = 0;
+                it->buffer.clear();
+                it = m_waiting_in_tcp_clients.erase(it);
+                continue;
+            }
+
+            if (it->next_packet_size > 0 && it->buffer.size() >= it->next_packet_size)
+            {
+                if (msg.ParseFromArray(it->buffer.data(), static_cast<int>(it->next_packet_size)) &&
+                    msg.has_network_advertise() &&
+                    msg.network_advertise().has_peer())
                 {
-                    it->socket.recv(&it->next_packet_size, sizeof(next_packet_size_t));
-                    it->next_packet_size = utils::Endian::net_swap(it->next_packet_size);
-                    count -= sizeof(next_packet_size_t);
-                }
-                
-                static constexpr next_packet_size_t KEE_MAX_PACKET_IN = 4 * 1024 * 1024;
-                if (it->next_packet_size > KEE_MAX_PACKET_IN)
-                {
-                    APP_LOG(Log::LogLevel::WARN, "Dropping oversized inbound packet (%u bytes) – closing connection", it->next_packet_size);
                     it->next_packet_size = 0;
                     it->buffer.clear();
-                    it = m_tcp_clients.erase(it);
-                    continue;
-                }
-                if (it->next_packet_size > 0 && count >= it->next_packet_size)
-                {
-                    it->buffer.resize(it->next_packet_size);
-                    it->socket.recv(it->buffer.data(), it->next_packet_size);
 
-                    const void* message;
-                    int message_size;
+                    auto const& peer_msg = msg.network_advertise().peer();
+                    std::pair<tcp_socket*, std::vector<peer_t>> peer_ids_to_add = std::move(get_new_peer_ids(peer_msg));
 
-                #if defined(NETWORK_COMPRESS)
-                    string buff = std::move(decompress(it->buffer.data(), it->next_packet_size));
-                    message = buff.data();
-                    message_size = buff.length();
-                #else
-                    message = it->buffer.data();
-                    message_size = it->buffer.size();
-                #endif
-                    
-                    if (msg.ParseFromArray(message, message_size) &&
-                        msg.has_network_advertise() && 
-                        msg.network_advertise().has_peer())
+                    if (!peer_ids_to_add.second.empty())
                     {
-                        std::lock_guard<std::recursive_mutex> lk(local_mutex);
-
-                        it->next_packet_size = 0;
-                        it->buffer.clear();
-                        it->socket.set_nonblocking(false);
-
-                        auto const& peer_msg = msg.network_advertise().peer();
-                        std::pair<tcp_socket*, std::vector<peer_t>> peer_ids_to_add = std::move(get_new_peer_ids(peer_msg));
-
-                        if (!peer_ids_to_add.second.empty())
+                        if (peer_ids_to_add.first == nullptr)
                         {
-                            if (peer_ids_to_add.first == nullptr)
-                            {
-                                m_tcp_clients.emplace_back(std::move(*it));
-                                peer_ids_to_add.first = &(m_tcp_clients.rbegin()->socket);
-                            }
-                            add_new_tcp_client(peer_ids_to_add.first, peer_ids_to_add.second, true);
+                            m_tcp_clients.emplace_back(std::move(*it));
+                            it = m_waiting_in_tcp_clients.erase(it);
+                            peer_ids_to_add.first = &(m_tcp_clients.rbegin()->socket);
                         }
+                        add_new_tcp_client(peer_ids_to_add.first, peer_ids_to_add.second, true);
+                        continue;
                     }
-                    it = m_waiting_in_tcp_clients.erase(it);
-                    continue;
                 }
+                it = m_waiting_in_tcp_clients.erase(it);
+                continue;
             }
-            
+
             ++it;
         }
         catch (std::exception &e)
         {
-            
             APP_LOG(Log::LogLevel::WARN, "Failed peer pair: %s", e.what());
             it = m_waiting_in_tcp_clients.erase(it);
         }
@@ -577,11 +502,8 @@ void Network::process_network_message(Network_Message_pb &msg)
 {
     std::lock_guard<std::mutex> lk(message_mutex);
 
-    std::chrono::system_clock::time_point msg_time(std::chrono::milliseconds(msg.timestamp()));
-
     if (msg.dest_id() == peer_t())
     {
-        
         for (auto& channel : m_default_channels)
             m_pending_network_msgs[channel.second].emplace_back(msg);
     }
@@ -599,22 +521,13 @@ void Network::process_udp()
         ipv4m_addr addr;
         std::array<uint8_t, 4096> buffer;
         Network_Message_pb msg;
-        size_t len;
-        
-        len = m_udp_socket.recvfrom(addr, buffer.data(), buffer.size());
-        if (len > 0)
-        {
-            const void* message;
-            int message_size;
 
-            #if defined(NETWORK_COMPRESS)
-                string buff(std::move(decompress(buffer.data(), len)));
-                message = buff.data();
-                message_size = buff.length();
-            #else
-                message = buffer.data();
-                message_size = (int)len;
-            #endif
+        int r = m_udp_socket.recvfrom(buffer.data(), buffer.size(), addr);
+        if (r > 0)
+        {
+            size_t len = static_cast<size_t>(r);
+            const void* message = buffer.data();
+            int message_size = static_cast<int>(len);
 
             if (msg.ParseFromArray(message, message_size))
             {
@@ -652,7 +565,6 @@ void Network::process_udp()
                     }
                     else
                     {
-                        
                         process_network_message(msg);
                     }
                 }
@@ -663,138 +575,101 @@ void Network::process_udp()
             }
             else
             {
-                APP_LOG(Log::LogLevel::DEBUG, "Dropping UDP data: failed to pase protobuf");
+                APP_LOG(Log::LogLevel::DEBUG, "Dropping UDP data: failed to parse protobuf");
             }
         }
     }
     catch (socket_exception & e)
     {
-        
     }
 }
 
 void Network::process_tcp_listen()
 {
-    try
+    tcp_buffer_t tcp_buff{};
+    tcp_buff.socket = std::move(m_tcp_socket.accept());
+    if (tcp_buff.socket.is_valid())
     {
-        tcp_buffer_t tcp_buff({});
-        tcp_buff.socket = std::move(m_tcp_socket.accept());
-        tcp_buff.socket.set_nonblocking(true);
         m_waiting_in_tcp_clients.emplace_back(std::move(tcp_buff));
     }
-    catch (socket_exception & e)
+    else
     {
-        APP_LOG(Log::LogLevel::WARN, "TCP Listen exception: %s", e.what());
+        APP_LOG(Log::LogLevel::WARN, "TCP Listen accept failed");
     }
 }
 
 void Network::process_tcp_data(tcp_buffer_t& tcp_buffer)
 {
-    
-    Network_Message_pb msg;
-    size_t len;
-
-    unsigned long count = 0;
-    tcp_buffer.socket.ioctlsocket(Socket::cmd_name::fionread, &count);
-    if (count > 0)
+    if (!read_available(tcp_buffer))
     {
-        size_t buff_len = tcp_buffer.buffer.size();
-        tcp_buffer.buffer.resize(buff_len + count); 
+        remove_tcp_peer(tcp_buffer);
+        throw socket_exception("connection closed");
+    }
 
-        len = tcp_buffer.socket.recv(tcp_buffer.buffer.data() + buff_len, count);
-
-        while(tcp_buffer.buffer.size() > 0)
+    Network_Message_pb msg;
+    while (tcp_buffer.buffer.size() > 0)
+    {
+        if (tcp_buffer.next_packet_size == 0 && tcp_buffer.buffer.size() >= sizeof(next_packet_size_t))
         {
-            if (tcp_buffer.next_packet_size == 0 && tcp_buffer.buffer.size() >= sizeof(next_packet_size_t))
-            {
-                tcp_buffer.next_packet_size = *reinterpret_cast<next_packet_size_t*>(&tcp_buffer.buffer[0]);
-                tcp_buffer.next_packet_size = utils::Endian::net_swap(tcp_buffer.next_packet_size);
-                tcp_buffer.buffer.erase(tcp_buffer.buffer.begin(), tcp_buffer.buffer.begin() + sizeof(tcp_buffer.next_packet_size));
-            }
+            tcp_buffer.next_packet_size = *reinterpret_cast<next_packet_size_t*>(&tcp_buffer.buffer[0]);
+            tcp_buffer.next_packet_size = utils::Endian::net_swap(tcp_buffer.next_packet_size);
+            tcp_buffer.buffer.erase(tcp_buffer.buffer.begin(), tcp_buffer.buffer.begin() + sizeof(next_packet_size_t));
+        }
 
-            if (tcp_buffer.next_packet_size > 0 && tcp_buffer.buffer.size() >= tcp_buffer.next_packet_size)
+        if (tcp_buffer.next_packet_size > 0 && tcp_buffer.buffer.size() >= tcp_buffer.next_packet_size)
+        {
+            if (tcp_buffer.next_packet_size > KEE_MAX_PACKET)
             {
-                const void* message;
-                int message_size;
-            #if defined(NETWORK_COMPRESS)
-                string buff = std::move(decompress(tcp_buffer.buffer.data(), tcp_buffer.next_packet_size));
-                message = buff.data();
-                message_size = buff.length();
-            #else
-                message = tcp_buffer.buffer.data();
-                message_size = (int)tcp_buffer.next_packet_size;
-            #endif
-
-                if (msg.ParseFromArray(message, message_size))
-                {
-                    
-                    process_network_message(msg);
-                }
-                tcp_buffer.buffer.erase(tcp_buffer.buffer.begin(), tcp_buffer.buffer.begin() + tcp_buffer.next_packet_size);
+                APP_LOG(Log::LogLevel::WARN, "Dropping oversized packet (%u bytes)", tcp_buffer.next_packet_size);
+                tcp_buffer.buffer.clear();
                 tcp_buffer.next_packet_size = 0;
-            }
-            else
-            {
                 break;
             }
+
+            if (msg.ParseFromArray(tcp_buffer.buffer.data(), static_cast<int>(tcp_buffer.next_packet_size)))
+            {
+                process_network_message(msg);
+            }
+            tcp_buffer.buffer.erase(tcp_buffer.buffer.begin(), tcp_buffer.buffer.begin() + tcp_buffer.next_packet_size);
+            tcp_buffer.next_packet_size = 0;
+        }
+        else
+        {
+            break;
         }
     }
 }
 
 void Network::network_thread()
 {
-    int broadcast = 1;
-
     start_network();
 
-    m_udp_socket.setsockopt(Socket::level::sol_socket, Socket::option_name::so_broadcast, &broadcast, sizeof(broadcast));
-
-    if (!m_network_task.want_stop())
-    {
-        m_poll.add_socket(m_udp_socket);
-        m_poll.add_socket(m_tcp_socket);
-        m_poll.add_socket(m_tcp_self_recv.socket);
-        for(auto i = 0; i < m_poll.get_num_polls(); ++i)
-            m_poll.set_events(i, Socket::poll_flags::in);
-    }
-
-    while (!m_network_task.want_stop())
+    while (!m_want_stop)
     {
         do_advertise();
 
-        auto res = m_poll.poll(500);
-        if (res == 0)
-            continue;
+        if (m_udp_socket.has_data(0))
+            process_udp();
 
-        if ((m_poll.get_revents(m_udp_socket) & Socket::poll_flags::in_hup) != Socket::poll_flags::none)
-            process_udp(); 
+        if (m_tcp_socket.has_data(0))
+            process_tcp_listen();
 
-        if ((m_poll.get_revents(m_tcp_socket) & Socket::poll_flags::in_hup) != Socket::poll_flags::none)
-            process_tcp_listen(); 
-        
-        if ((m_poll.get_revents(m_tcp_self_recv.socket) & Socket::poll_flags::in_hup) != Socket::poll_flags::none)
+        if (m_tcp_self_recv.socket.has_data(0))
         {
             try
             {
-                process_tcp_data(m_tcp_self_recv); 
+                process_tcp_data(m_tcp_self_recv);
             }
             catch (...)
             {
-                assert(0 == 1 && "The local socket should not fail");
             }
         }
-        
+
         {
             std::lock_guard<std::recursive_mutex> lk(local_mutex);
             for (auto it = m_tcp_clients.begin(); it != m_tcp_clients.end();)
             {
-                auto reevents = m_poll.get_revents(it->socket);
-                if ((reevents & Socket::poll_flags::hup) != Socket::poll_flags::none)
-                {
-                    remove_tcp_peer(*it);
-                    it = m_tcp_clients.erase(it);
-                }
-                else if ((reevents & Socket::poll_flags::in_hup) != Socket::poll_flags::none)
+                if (it->socket.has_data(0))
                 {
                     try
                     {
@@ -803,6 +678,7 @@ void Network::network_thread()
                     }
                     catch (std::exception & e)
                     {
+                        APP_LOG(Log::LogLevel::DEBUG, "TCP client error: %s", e.what());
                         remove_tcp_peer(*it);
                         it = m_tcp_clients.erase(it);
                     }
@@ -811,11 +687,15 @@ void Network::network_thread()
                     ++it;
             }
         }
-        
+
         process_waiting_in_client();
-        
+
         process_waiting_out_clients();
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+    stop_network();
 }
 
 void Network::advertise_peer_id(peer_t const& peerid)
@@ -922,7 +802,7 @@ bool Network::SendBroadcast(Network_Message_pb& msg)
 {
     std::lock_guard<std::recursive_mutex> lk(local_mutex);
 
-    std::vector<ipv4m_addr> broadcasts = std::move(get_broadcasts());
+    std::vector<ipv4m_addr> broadcasts = get_broadcasts();
 
     assert((msg.source_id() != peer_t() && "Source id cannot be null"));
     assert((msg.dest_id() == peer_t() && "Destination id should be null"));
@@ -931,26 +811,14 @@ bool Network::SendBroadcast(Network_Message_pb& msg)
 
     string buffer;
     msg.SerializeToString(&buffer);
-#if defined(NETWORK_COMPRESS)
-    max_message_size = std::max<uint64_t>(max_message_size, buffer.length());
-
-    buffer = std::move(compress(buffer.data(), buffer.length()));
-    max_compressed_message_size = std::max<uint64_t>(max_compressed_message_size, buffer.length());
-#endif
 
     for (auto& brd : broadcasts)
     {
         for (uint16_t port = network_port; port < max_network_port; ++port)
         {
             brd.set_port(port);
-            try
+            if (m_udp_socket.sendto(buffer.data(), buffer.length(), brd) <= 0)
             {
-                m_udp_socket.sendto(brd, buffer.data(), buffer.length());
-                
-            }
-            catch (socket_exception & e)
-            {
-                
                 return false;
             }
         }
@@ -975,22 +843,9 @@ std::set<Network::peer_t> Network::UDPSendToAllPeers(Network_Message_pb& msg)
         string buffer;
         msg.SerializeToString(&buffer);
 
-    #if defined(NETWORK_COMPRESS)
-        buffer = std::move(compress(buffer.data(), buffer.length()));
-
-        max_message_size = std::max<uint64_t>(max_message_size, buffer.length());
-        max_compressed_message_size = std::max<uint64_t>(max_compressed_message_size, buffer.length());
-    #endif
-
-        try
+        if (m_udp_socket.sendto(buffer.data(), buffer.length(), peer_infos.second) > 0)
         {
-            m_udp_socket.sendto(peer_infos.second, buffer.data(), buffer.length());
             peers_sent_to.insert(peer_infos.first);
-            
-        }
-        catch (socket_exception & e)
-        {
-            
         }
     });
 
@@ -1006,7 +861,6 @@ bool Network::UDPSendTo(Network_Message_pb& msg)
     auto it = m_udp_addrs.find(msg.dest_id());
     if (it == m_udp_addrs.end())
     {
-        
         return false;
     }
 
@@ -1015,23 +869,12 @@ bool Network::UDPSendTo(Network_Message_pb& msg)
     string buffer;
     msg.SerializeToString(&buffer);
 
-#if defined(NETWORK_COMPRESS)
-    max_message_size = std::max<uint64_t>(max_message_size, buffer.length());
-
-    buffer = std::move(compress(buffer.data(), buffer.length()));
-    max_compressed_message_size = std::max<uint64_t>(max_compressed_message_size, buffer.length());
-#endif
-
-    try
+    if (m_udp_socket.sendto(buffer.data(), buffer.length(), it->second) <= 0)
     {
-        m_udp_socket.sendto(it->second, buffer.data(), buffer.length());
-        APP_LOG(Log::LogLevel::DEBUG, "Sent message to peer_id: %s, addr: %s", msg.dest_id().c_str(), it->second.to_string().c_str());
-    }
-    catch (socket_exception & e)
-    {
-        
         return false;
     }
+
+    APP_LOG(Log::LogLevel::DEBUG, "Sent message to peer_id: %s, addr: %s", msg.dest_id().c_str(), it->second.to_string().c_str());
 
     return true;
 }
@@ -1051,29 +894,13 @@ std::set<Network::peer_t> Network::TCPSendToAllPeers(Network_Message_pb& msg)
 
         string buffer(sizeof(next_packet_size_t), 0);
 
-    #if defined(NETWORK_COMPRESS)
-        string data;
-        msg.SerializeToString(&data);
-
-        max_message_size = std::max<uint64_t>(max_message_size, data.length());
-
-        buffer += std::move(compress(data.data(), data.length()));
-        max_compressed_message_size = std::max<uint64_t>(max_compressed_message_size, buffer.length());
-    #else
         buffer += std::move(msg.SerializeAsString());
-    #endif
 
         *reinterpret_cast<next_packet_size_t*>(&buffer[0]) = make_next_packet_size(buffer);
 
-        try
+        if (client.second->send(buffer.data(), buffer.length()) > 0)
         {
-            client.second->send(buffer.data(), buffer.length());
             peers_sent_to.insert(client.first);
-            
-        }
-        catch (socket_exception & e)
-        {
-            
         }
     });
 
@@ -1089,7 +916,6 @@ bool Network::TCPSendTo(Network_Message_pb& msg)
     auto it = m_tcp_peers.find(msg.dest_id());
     if (it == m_tcp_peers.end())
     {
-        
         return false;
     }
 
@@ -1097,28 +923,12 @@ bool Network::TCPSendTo(Network_Message_pb& msg)
 
     string buffer(sizeof(next_packet_size_t), 0);
 
-#if defined(NETWORK_COMPRESS)
-    string data;
-    msg.SerializeToString(&data);
-
-    max_message_size = std::max<uint64_t>(max_message_size, data.length());
-
-    buffer += std::move(compress(data.data(), data.length()));
-    max_compressed_message_size = std::max<uint64_t>(max_compressed_message_size, buffer.length());
-#else
     buffer += std::move(msg.SerializeAsString());
-#endif
 
     *reinterpret_cast<next_packet_size_t*>(&buffer[0]) = make_next_packet_size(buffer);
 
-    try
+    if (it->second->send(buffer.data(), buffer.length()) <= 0)
     {
-        it->second->send(buffer.data(), buffer.length());
-        
-    }
-    catch (socket_exception & e)
-    {
-        
         return false;
     }
 

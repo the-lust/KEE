@@ -154,6 +154,7 @@ project "KEE-Emulator"
    files {
       "src/**.h", "src/**.hpp",
       "src/**.c", "src/**.cpp",
+      "src/network/proto/network_proto.pb.cc",
       "include/**.h",
       "third_party/mini_detour/mini_detour.cpp",
       "src/stubs.cpp",
@@ -207,6 +208,16 @@ project "KEE-Emulator"
          "src/integratedplatform/eossdk_integratedplatform.cpp",
          "src/parties/parties_exports.cpp",
       }
+   else
+      -- With protobuf the real implementations live in src/lobby/ and
+      -- src/sessions/; the no-protobuf stubs in src/lobbymodification/ and
+      -- src/sessionmodification/ would clash at link time. src/stubs.cpp is
+      -- the no-protobuf fallback for exports that cannot compile there.
+      removefiles {
+         "src/lobbymodification/eossdk_lobbymodification.cpp",
+         "src/sessionmodification/eossdk_sessionmodification.cpp",
+         "src/stubs.cpp",
+      }
    end
 
    -- Windows .def export file
@@ -228,6 +239,7 @@ project "KEE-Emulator"
       table.insert(incdirs, "third_party/protobuf/build_lite/config")
       table.insert(incdirs, "third_party/protobuf/third_party/utf8_range")
       table.insert(incdirs, "src/network/proto")
+      table.insert(incdirs, "include/network/proto")
    end
    -- Auto-add all include/* subdirs
    for _, d in ipairs(os.matchdirs("include/*")) do
@@ -254,9 +266,15 @@ project "KEE-Emulator"
    -- ── Protobuf lib linking ─────────────────────────────────────────────
    if HAS_PROTOBUF then
       filter { "system:windows", "platforms:x64" }
-         links { protobuf_lib_path("x64") }
+         links {
+            protobuf_lib_path("x64"),
+            "third_party/protobuf/build_lite/third_party/utf8_range/Release/libutf8_validity.lib",
+         }
       filter { "system:windows", "platforms:x86" }
-         links { protobuf_lib_path("x86") }
+         links {
+            protobuf_lib_path("x86"),
+            "third_party/protobuf/build_lite_x86/third_party/utf8_range/Release/libutf8_validity.lib",
+         }
       filter {}
    end
 
@@ -318,6 +336,7 @@ project "EGClient"
    files {
       "src/**.h", "src/**.hpp",
       "src/**.c", "src/**.cpp",
+      "src/network/proto/network_proto.pb.cc",
       "include/**.h",
       "third_party/mini_detour/mini_detour.cpp",
       "src/stubs.cpp",
@@ -325,11 +344,12 @@ project "EGClient"
 
    -- Exclude protobuf-dependent files (same as main emu)
    removefiles {
-      "src/network/proto/network_proto.pb.cc",
-      "src/network/network.cpp",
       "src/proxy/proxy.cpp",
       "src/cold_loader/cold_loader.cpp",
       "src/tools/generate_interfaces.cpp",
+      "src/lobbymodification/eossdk_lobbymodification.cpp",
+      "src/sessionmodification/eossdk_sessionmodification.cpp",
+      "src/stubs.cpp",
    }
 
    -- Windows .def export file (EGS client exports)
@@ -347,6 +367,7 @@ project "EGClient"
    }
    if HAS_PROTOBUF then
       table.insert(incdirs, "src/network/proto")
+      table.insert(incdirs, "include/network/proto")
    end
    -- Auto-add all include/* subdirs
    for _, d in ipairs(os.matchdirs("include/*")) do
@@ -369,9 +390,15 @@ project "EGClient"
    -- ── Protobuf lib linking (same as main emu) ──────────────────────────
    if HAS_PROTOBUF then
       filter { "system:windows", "platforms:x64" }
-         links { protobuf_lib_path("x64") }
+         links {
+            protobuf_lib_path("x64"),
+            "third_party/protobuf/build_lite/third_party/utf8_range/Release/libutf8_validity.lib",
+         }
       filter { "system:windows", "platforms:x86" }
-         links { protobuf_lib_path("x86") }
+         links {
+            protobuf_lib_path("x86"),
+            "third_party/protobuf/build_lite_x86/third_party/utf8_range/Release/libutf8_validity.lib",
+         }
       filter {}
    end
 

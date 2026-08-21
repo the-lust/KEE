@@ -4,6 +4,7 @@
 
 #include "sdk/eos_common.h"
 #include <cstdlib>
+#include <cstring>
 
 // Helper: zero-initialize any struct via memset
 template<typename T>

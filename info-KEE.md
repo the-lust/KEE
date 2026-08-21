@@ -1,54 +1,69 @@
-# KEE (Kaneki's Epic Emulator)
+# KEE — project notes
 
 ## Overview
-**KEE = Kaneki's Epic Emulator** — a drop-in replacement for the **Epic Online Services SDK**
-(`EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll` and equivalents). Lets Epic games run fully
-offline without the Epic Games Launcher while preserving multiplayer, achievements, stats, and
-connectivity behavior. Built from the **S-EGS** codebase (found on D drive at `D:\s-egs`).
 
-## Where the code is
-- **Local working copy: `D:\s-egs\s-egs`** (full source tree) — with detailed history/design doc at `D:\s-egs\info.md`
-- GitHub: referenced as "by segs" — related repos: `the-lust/femboy` ("a simple emulator for games to
-  work better"), `the-lust/eosanalyze` (`D:\eosanalyze`, an EOS analysis tool).
-- This workspace folder is the home for the refactored/unified KEE project.
+**KEE = Kaneki's Epic Emulator** — a drop-in replacement for the Epic Online Services SDK
+(`EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll`). Epic games run offline without the
+Epic Games Launcher, while keeping multiplayer, achievements, stats and presence behavior.
 
-## Research notes (from D:\s-egs\info.md)
-### What S-EGS does
-- Emulates the EOS SDK surface: platform init, Auth, Connect, Ecom, PlayerDataStorage, Achievements,
-  Stats, Presence, Sessions, Lobbies, P2P, Leaderboards, UserInfo, TitleStorage, CustomInvites etc.
-- **Dual-architecture proxy loader DLLs**: `winmm.dll` / `version.dll` (x86 + x64) that hijack
-  `GetCommandLineW` and append Epic Launcher args when missing:
-  ```
-  -AUTH_LOGIN=unused -AUTH_PASSWORD=segs-token -AUTH_TYPE=exchangecode -epicapp=segs -epicenv=Prod -EpicPortal
-  ```
-  then load the real `EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll`.
-- **Magic side-loader**: on startup checks for `andreh.dll`, `cirno.dll`, `0xzeon.dll`, `kirigiri.dll`,
-  `mojtaba.dll` in the game folder, else loads everything from `egs_settings/load_dlls/`.
-- **Launcher bypass**: `CheckForLauncherAndRestart` always returns `EOS_NoChange`; regional defaults
-  `GetActiveCountryCode` -> "US", `GetActiveLocaleCode` -> "en" (prevents UE5 crashes).
-- **Codebase modernization done**: `se` namespace + type aliases (`se::string`, `se::path`, `se::json`,
-  `se::lock`, `se::clock`...), `m_` member prefix, `dispatch_cb<T>` / `SE_CB_BEGIN/END` callback helpers
-  (40%+ code reduction), callback manager, human-style comments.
-- **Build**: `build.bat all` builds x86 + x64 emulators + both proxies -> 6 DLLs:
-  - `build-release/x64/EOSSDK-Win64-Shipping.dll`, `winmm.dll`, `version.dll`
-  - `build-release/x86/EOSSDK-Win32-Shipping.dll`, `winmm.dll`, `version.dll`
-- Config: `egs_settings/` (with `egs_settings.EXAMPLE`) — regional overrides (CountryCode, LocaleCode),
-  load_dlls folder.
-- Also uses premake5 + CMake (`premake5.lua`, `CMakeLists.txt`), `S-EGS.sln`.
+Origin: built from the **S-EGS** codebase, refactored into one unified project in this folder.
 
-## Target feature set for KEE
-- [ ] Full EOS SDK emulation surface (all services listed above) with offline-first behavior
-- [ ] Proxy loader pair per arch (winmm/version) + command-line injection
-- [ ] Magic side-loader + egs_settings config
-- [ ] Unified build: one command -> 6 DLLs; CI-friendly
-- [ ] Multiplayer stubs (LAN/local P2P) where feasible
-- [ ] Optional real network relay mode (play with friends via self-hosted relay)
-- [ ] Overlay support (global overlay hook)
+## Repository layout (as committed)
+
+- `KEE.sln` — premake5-generated Visual Studio solution (regenerate: `premake5 vs2022`)
+- `premake5.lua` — the build definition; produces 6 DLLs + loader + tools
+- `src/kee.def`, `src/egclient.def` — export tables (1072 emulator exports)
+- `tools/inventory_exports.ps1` — export-coverage verification vs the official SDK headers
+- `info-KEE.md`, `README.md` — docs
+
+## Emulator architecture
+
+- One DLL per role:
+  - `KEE-Emulator` → `EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll`
+  - `Proxy-WinMM` / `Proxy-Version` → `winmm.dll` / `version.dll` (command-line injection +
+    loading of the real SDK DLL)
+  - `EGClient` → `egclient64.dll` / `egclient.dll` (EGS client emulation)
+  - `ColdLoader` → `cold_loader64.exe` / `cold_loader.exe` (boots the target game)
+- Services live in `src/<service>/`; each has an `eossdk_<svc>.cpp` implementation class and
+  `*_exports.cpp` wrapping the C ABI.
+- The LAN relay engine (`src/network/network.cpp`) does UDP broadcast discovery on the
+  `network_port..max_network_port` range (see `include/network/network.h`) and TCP relay of
+  length-prefixed protobuf messages (`src/network/proto/network_proto.proto` — regenerate with
+  protoc 7.35.1, i.e. `protoc -I src/network/proto --cpp_out=... network_proto.proto`).
+- When protobuf is unavailable (`--without-protobuf`), `src/eossdk_class_stubs.cpp` provides
+  no-op Network/service stubs; all exports still exist and return safely.
+
+## Build state / history of fixes
+
+1. **Gap analysis** — `tools/inventory_exports.ps1` compares SDK headers vs `kee.def` vs
+   implementations. Result: 0 SDK functions missing, 0 def exports without definition
+   (1072/1072 exports defined; 1011 SDK functions, 61 extra platform/helpers).
+2. **Removed fake exports** — `EOS_PresenceModification_SetTemplateData` /
+   `EOS_PresenceModification_SetTemplateId` do not exist in the real EOS SDK; deleted from
+   `src/kee.def` and the exports file.
+3. **Network module migration** — the import carried a `network.cpp` written against an older
+   PortableAPI (exception-based sockets, `Socket` poll class, `ipv4m_addr` setters). Rewritten
+   for the current poll-based `portable_api.h` with the same wire protocol; the `Network` class
+   header (`include/network/network.h`) received its full member set back.
+4. **Missing generated protobuf TU** — `network_proto.pb.cc` was never matched by premake
+   (`src/**.cpp` does not match `.cc`), causing LNK2001 for every protobuf message. Added
+   explicitly to `premake5.lua`; regenerated both `.pb.cc` and `.pb.h` with protoc 35.1
+   (the checked-in `.pb.h` was already 7.35.1-identical), keeping them in sync.
+5. `src/stubs.cpp` gained `#include <cstring>`; ColdLoader vcxproj subsystem fixed via premake
+   (`WindowedApp` now emits `SubSystem=Windows`).
+
+## Verification workflow
+
+```powershell
+powershell -File tools/inventory_exports.ps1    # coverage report -> build/export_gap_report.json
+msbuild KEE.sln /p:Configuration=Release /p:Platform=x64 /m
+```
 
 ## Roadmap
-1. Bring `D:\s-egs\s-egs` source into this folder (git init, commit as base)
-2. Re-run build, verify all 6 DLLs compile clean (x86+x64)
-3. Inventory emulated exports vs real EOS SDK headers (see `def_functions.txt` / `impl_functions.txt`
-   in source root) and fill gaps
-4. Add test titles (e.g. a UE5 sample) + per-game config examples
-5. Docs: full emulated API reference, per-game setup guide
+
+- [x] Import source, git init, initial commit
+- [x] Rebuild all 6 DLLs clean (x86 + x64)
+- [x] Export-coverage gap analysis and fixes
+- [ ] Test titles (UE5 sample) + per-game config examples
+- [ ] Full emulated-API reference doc
+- [ ] Optional self-hosted relay server for cross-machine play (relay core exists in-tree)

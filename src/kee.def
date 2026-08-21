@@ -663,8 +663,6 @@ EXPORTS
     EOS_PresenceModification_SetJoinInfo
     EOS_PresenceModification_SetRawRichText
     EOS_PresenceModification_SetStatus
-    EOS_PresenceModification_SetTemplateData
-    EOS_PresenceModification_SetTemplateId
     EOS_Presence_AddNotifyJoinGameAccepted
     EOS_Presence_AddNotifyOnPresenceChanged
     EOS_Presence_CopyPresence
@@ -979,7 +977,6 @@ EXPORTS
     EOS_UI_ShowFriends
     EOS_UI_ShowNativeProfile
     EOS_UI_ShowReportPlayer
-    EOS_UI_ShowReportVoice
     EOS_UI_UpdateElements
     EOS_UserInfo_BestDisplayName_Release
     EOS_UserInfo_CopyBestDisplayName

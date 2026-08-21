@@ -19,7 +19,7 @@ $defExport = Join-Path $root "src\kee.def"
 
 function Get-Lines($path) {
     if (-not (Test-Path $path)) { return @() }
-    Get-Content $path | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and $_ -notmatch "^;" }
+    Get-Content $path | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and $_ -notmatch "^;" -and $_ -notmatch "^(EXPORTS|LIBRARY)" }
 }
 
 $sdkFuncs    = Get-Lines $defFile
@@ -39,8 +39,9 @@ $cppFiles = Get-ChildItem (Join-Path $root "src") -Recurse -Include *.cpp
 $defined = @{}
 foreach ($file in $cppFiles) {
     foreach ($line in (Get-Content $file.FullName)) {
-        if ($line -match 'EOS_DECLARE_FUNC\([^)]*\)\s*(EOS_[A-Za-z0-9_]+)\s*\(') { $defined[$Matches[1]] = $file.Name }
-        if ($line -match '^\s*(EGS_Client_[A-Za-z0-9_]+)\s*\(') { $defined[$Matches[1]] = $file.Name }
+        if ($line -match 'EOS_DECLARE_FUNC\([^)]*\)\s*(?:[A-Za-z0-9_\s]*\s)?(EOS_[A-Za-z0-9_]+)\s*\(') { $defined[$Matches[1]] = $file.Name }
+        if ($line -match '__declspec\s*\(\s*dllexport\s*\)\s*[^;(]*\b(EOS_[A-Za-z0-9_]+)\s*\(') { $defined[$Matches[1]] = $file.Name }
+        if ($line -match '\b(EGS_Client_[A-Za-z0-9_]+)\s*\(') { $defined[$Matches[1]] = $file.Name }
     }
 }
 $noDef = $exports | Where-Object { -not $defined.ContainsKey($_) }

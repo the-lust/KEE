@@ -30,3 +30,5 @@ struct iface_ip_t
     uint32_t mask; 
 };
 LOCAL_API std::vector<iface_ip_t> const& get_ifaces_ip();
+
+LOCAL_API std::vector<PortableAPI::ipv4m_addr> const& get_broadcasts();
