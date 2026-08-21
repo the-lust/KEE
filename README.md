@@ -1,4 +1,4 @@
-# KEE — Epic Online Services SDK Emulator
+# KEE — Kaneki's Epic Online Services SDK Emulator
 
 Drop-in replacement for `EOSSDK-Win64-Shipping.dll` / `EOSSDK-Win32-Shipping.dll`. Runs Epic games offline without the launcher or account.
 
